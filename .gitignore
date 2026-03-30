@@ -1,3 +1,6 @@
+# Build directory
+build/
+
 # Prerequisites
 *.d
 
@@ -36,6 +39,10 @@
 *.x86_64
 *.hex
 
+# Firmware binaries
+*.uf2
+*.bin
+
 # Debug files
 *.dSYM/
 *.su
@@ -51,5 +58,12 @@ Module.symvers
 Mkfile.old
 dkms.conf
 
-# debug information files
+# Debug information files
 *.dwo
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
