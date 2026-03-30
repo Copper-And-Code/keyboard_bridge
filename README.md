@@ -109,6 +109,10 @@ This produces `keyboard_bridge.uf2` in the build directory.
 - **`hid_keyboard.c`** — HID boot report parsing, key press detection (with rollover), Caps Lock handling
 - **`vt100_map.c`** — HID usage code to VT100/ASCII conversion tables
 
+## About This Project
+
+This firmware was entirely written by [Claude](https://claude.ai), Anthropic's AI assistant, in a vibe coding session. The repository owner needed this accessory to bridge a Bluetooth keyboard to a serial VT100 terminal but did not have enough time to write the code from scratch — so Claude did it. The full implementation, including Bluetooth HID host integration, VT100 escape sequence mapping, and this documentation, was generated in a single conversational session.
+
 ## License
 
 See [LICENSE](LICENSE) file.
