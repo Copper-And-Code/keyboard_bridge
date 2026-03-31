@@ -1,4 +1,5 @@
 #include "vt100_map.h"
+#include <stdbool.h>
 #include <string.h>
 
 // ASCII characters for unshifted keys a-z mapped from HID usage 0x04-0x1D

@@ -1,6 +1,7 @@
 #include "hid_keyboard.h"
 #include "vt100_map.h"
 #include "hardware/uart.h"
+#include "hardware/gpio.h"
 #include <string.h>
 #include <stdio.h>
 
