@@ -30,7 +30,44 @@ target_link_libraries(keyboard_bridge
 )
 
 # Disable USB output, enable UART output
-pico_enable_stdio_usb(keyboard_bridge 0)
+pico_enable_stdio_usb(keyboard_bridge 1)
 pico_enable_stdio_uart(keyboard_bridge 0)
 
 pico_add_extra_outputs(keyboard_bridge)
+
+# --- cyw43_test: minimal CYW43 test without BTstack ---
+add_executable(cyw43_test
+        src/cyw43_test.c
+)
+
+target_include_directories(cyw43_test PRIVATE
+        ${CMAKE_CURRENT_LIST_DIR}/src
+)
+
+target_link_libraries(cyw43_test
+        pico_stdlib
+        pico_cyw43_arch_none
+)
+
+pico_enable_stdio_usb(cyw43_test 1)
+pico_enable_stdio_uart(cyw43_test 0)
+
+pico_add_extra_outputs(cyw43_test)
+
+# --- board_test: minimal board test without CYW43 ---
+add_executable(board_test
+        src/board_test.c
+)
+
+target_include_directories(board_test PRIVATE
+        ${CMAKE_CURRENT_LIST_DIR}/src
+)
+
+target_link_libraries(board_test
+        pico_stdlib
+)
+
+pico_enable_stdio_usb(board_test 1)
+pico_enable_stdio_uart(board_test 0)
+
+pico_add_extra_outputs(board_test)
