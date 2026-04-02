@@ -435,11 +435,12 @@ static void poll_timer_handler(btstack_timer_source_t *ts) {
         btstack_run_loop_add_timer(&poll_timer);
         return;
     }
-    // Poll Boot KB Input characteristic specifically
-    if (boot_kb_input_handle != 0) {
+    // Poll first input report characteristic (keyboard data in Report Protocol mode)
+    if (num_report_chars > 0) {
         gatt_state = GATT_STATE_W4_READ;
         gatt_client_read_value_of_characteristic_using_value_handle(
-            gatt_event_handler, ble_con_handle, boot_kb_input_handle);
+            gatt_event_handler, ble_con_handle,
+            report_chars[0].characteristic.value_handle);
         // Next poll scheduled after read completes (in gatt_event_handler)
     }
 }
@@ -475,18 +476,15 @@ static void hid_connection_ready(void) {
     gap_request_connection_parameter_update(ble_con_handle, 6, 12, 0, 200);
     printf("[BLE] HID ready! Requested fast connection params (7.5-15ms, latency 0).\n");
 
-    if (boot_kb_input_handle != 0) {
-        printf("[BLE] Boot KB Input handle=0x%04X — starting poll immediately.\n",
-               boot_kb_input_handle);
-        // Start polling Boot KB Input immediately (don't wait for notifications
-        // since this keyboard doesn't send them)
+    if (num_report_chars > 0) {
+        printf("[BLE] Polling report (handle=0x%04X) — starting immediately.\n",
+               report_chars[0].characteristic.value_handle);
         memset(last_report, 0, sizeof(last_report));
         polling_active = true;
         btstack_run_loop_set_timer_handler(&poll_timer, poll_timer_handler);
         btstack_run_loop_set_timer(&poll_timer, 1);
         btstack_run_loop_add_timer(&poll_timer);
-    } else {
-        printf("[BLE] No Boot KB Input, waiting for notifications...\n");
+        // Also start watchdog: if notifications arrive, stop polling
         btstack_run_loop_set_timer_handler(&notification_watchdog, notification_watchdog_handler);
         btstack_run_loop_set_timer(&notification_watchdog, 3000);
         btstack_run_loop_add_timer(&notification_watchdog);
