@@ -71,10 +71,15 @@ static int current_cccd_index = 0;
 // Notification listener
 static gatt_client_notification_t notification_listener;
 
-// Polling timer for reading reports
+// Polling timer for reading reports (fallback if notifications don't work)
 static btstack_timer_source_t poll_timer;
+static bool polling_active = false;
 static uint16_t boot_kb_input_handle = 0;
 static uint8_t last_report[8];  // Track last report to detect changes
+
+// Track whether notifications are actually arriving
+static bool notifications_working = false;
+static btstack_timer_source_t notification_watchdog;
 
 // --- Stored keyboard (persisted in flash via TLV) ---
 #define TLV_TAG_KEYBOARD_ADDR      0x4B42
@@ -269,11 +274,22 @@ static void notification_handler(uint8_t packet_type, uint16_t channel,
         uint16_t value_handle = gatt_event_notification_get_value_handle(packet);
         uint16_t value_len = gatt_event_notification_get_value_length(packet);
         const uint8_t *value = gatt_event_notification_get_value(packet);
-        printf("[HID] Report (handle=0x%04X, %d bytes):", value_handle, value_len);
+        printf("[HID] Notif (handle=0x%04X, %d bytes):", value_handle, value_len);
         for (int i = 0; i < value_len && i < 16; i++) {
             printf(" %02X", value[i]);
         }
         printf("\n");
+
+        // Notifications work - stop polling fallback if running
+        if (!notifications_working) {
+            notifications_working = true;
+            if (polling_active) {
+                printf("[HID] Notifications working, stopping poll fallback.\n");
+                btstack_run_loop_remove_timer(&poll_timer);
+                polling_active = false;
+            }
+        }
+
         hid_keyboard_process_report(value, value_len);
     }
 }
@@ -281,6 +297,7 @@ static void notification_handler(uint8_t packet_type, uint16_t channel,
 // ---- Manual GATT discovery ----
 
 static void enable_next_cccd(void);
+static void hid_connection_ready(void);
 
 static void gatt_event_handler(uint8_t packet_type, uint16_t channel,
                                 uint8_t *packet, uint16_t size) {
@@ -342,7 +359,6 @@ static void gatt_event_handler(uint8_t packet_type, uint16_t channel,
                 if (uuid16 == 0x2A22) {
                     boot_kb_input_handle = chr.value_handle;
                 }
-
                 // Save characteristics that support NOTIFY (input reports)
                 bool is_report = (uuid16 == 0x2A4D) || (uuid16 == 0x2A22);
                 bool can_notify = (chr.properties & ATT_PROPERTY_NOTIFY) != 0;
@@ -391,6 +407,11 @@ static void gatt_event_handler(uint8_t packet_type, uint16_t channel,
             }
             if (event_type == GATT_EVENT_QUERY_COMPLETE) {
                 gatt_state = GATT_STATE_CONNECTED;
+                // Schedule next poll if polling fallback is active
+                if (polling_active) {
+                    btstack_run_loop_set_timer(&poll_timer, 1);
+                    btstack_run_loop_add_timer(&poll_timer);
+                }
             }
             break;
 
@@ -400,22 +421,76 @@ static void gatt_event_handler(uint8_t packet_type, uint16_t channel,
 }
 
 static void poll_timer_handler(btstack_timer_source_t *ts) {
+    UNUSED(ts);
+    if (!polling_active) return;
     if (ble_con_handle == HCI_CON_HANDLE_INVALID || !is_connected) return;
-    if (gatt_state != GATT_STATE_CONNECTED) {
-        // Busy, retry later
-        btstack_run_loop_set_timer(ts, 50);
-        btstack_run_loop_add_timer(ts);
+    if (notifications_working) {
+        // Notifications started working, stop polling
+        polling_active = false;
         return;
     }
-    // Poll first report characteristic (keyboard input in report mode)
-    if (num_report_chars > 0) {
+    if (gatt_state != GATT_STATE_CONNECTED) {
+        // Busy, retry ASAP
+        btstack_run_loop_set_timer(&poll_timer, 1);
+        btstack_run_loop_add_timer(&poll_timer);
+        return;
+    }
+    // Poll Boot KB Input characteristic specifically
+    if (boot_kb_input_handle != 0) {
         gatt_state = GATT_STATE_W4_READ;
         gatt_client_read_value_of_characteristic_using_value_handle(
-            gatt_event_handler, ble_con_handle,
-            report_chars[0].characteristic.value_handle);
+            gatt_event_handler, ble_con_handle, boot_kb_input_handle);
+        // Next poll scheduled after read completes (in gatt_event_handler)
     }
-    btstack_run_loop_set_timer(ts, 10);
-    btstack_run_loop_add_timer(ts);
+}
+
+static void start_poll_fallback(void) {
+    if (polling_active || notifications_working) return;
+    printf("[HID] No notifications received, starting poll fallback.\n");
+    polling_active = true;
+    memset(last_report, 0, sizeof(last_report));
+    btstack_run_loop_set_timer_handler(&poll_timer, poll_timer_handler);
+    btstack_run_loop_set_timer(&poll_timer, 10);
+    btstack_run_loop_add_timer(&poll_timer);
+}
+
+static void notification_watchdog_handler(btstack_timer_source_t *ts) {
+    UNUSED(ts);
+    if (!is_connected) return;
+    if (!notifications_working) {
+        start_poll_fallback();
+    }
+}
+
+static void hid_connection_ready(void) {
+    is_connecting = false;
+    is_connected = true;
+    notifications_working = false;
+    polling_active = false;
+    led_set_blink(LED_BLINK_MS_CONNECTED);
+    btstack_run_loop_remove_timer(&reconnect_timer);
+    save_keyboard(ble_keyboard_addr, ble_keyboard_addr_type, true);
+
+    // Request fast connection parameters for responsive input
+    gap_request_connection_parameter_update(ble_con_handle, 6, 12, 0, 200);
+    printf("[BLE] HID ready! Requested fast connection params (7.5-15ms, latency 0).\n");
+
+    if (boot_kb_input_handle != 0) {
+        printf("[BLE] Boot KB Input handle=0x%04X — starting poll immediately.\n",
+               boot_kb_input_handle);
+        // Start polling Boot KB Input immediately (don't wait for notifications
+        // since this keyboard doesn't send them)
+        memset(last_report, 0, sizeof(last_report));
+        polling_active = true;
+        btstack_run_loop_set_timer_handler(&poll_timer, poll_timer_handler);
+        btstack_run_loop_set_timer(&poll_timer, 1);
+        btstack_run_loop_add_timer(&poll_timer);
+    } else {
+        printf("[BLE] No Boot KB Input, waiting for notifications...\n");
+        btstack_run_loop_set_timer_handler(&notification_watchdog, notification_watchdog_handler);
+        btstack_run_loop_set_timer(&notification_watchdog, 3000);
+        btstack_run_loop_add_timer(&notification_watchdog);
+    }
 }
 
 static void enable_next_cccd(void) {
@@ -436,24 +511,10 @@ static void enable_next_cccd(void) {
         current_cccd_index++;
     }
 
-    // All CCCDs written - we're connected!
+    // All CCCDs written - proceed without switching protocol mode
+    // (some keyboards disconnect if forced to Boot Protocol)
     gatt_state = GATT_STATE_CONNECTED;
-    is_connecting = false;
-    is_connected = true;
-    led_set_blink(LED_BLINK_MS_CONNECTED);
-    btstack_run_loop_remove_timer(&reconnect_timer);
-    save_keyboard(ble_keyboard_addr, ble_keyboard_addr_type, true);
-    printf("[BLE] HID ready! Listening for key reports.\n");
-
-    // Start polling report characteristic
-    if (num_report_chars > 0) {
-        memset(last_report, 0, sizeof(last_report));
-        printf("[BLE] Polling report (handle=0x%04X) every 10ms.\n",
-               report_chars[0].characteristic.value_handle);
-        btstack_run_loop_set_timer_handler(&poll_timer, poll_timer_handler);
-        btstack_run_loop_set_timer(&poll_timer, 100);
-        btstack_run_loop_add_timer(&poll_timer);
-    }
+    hid_connection_ready();
 }
 
 static void start_hid_discovery(void) {
@@ -575,6 +636,9 @@ static void packet_handler(uint8_t packet_type, uint16_t channel,
                 uint8_t reason = hci_event_disconnection_complete_get_reason(packet);
                 printf("[BLE] Keyboard disconnected, reason: 0x%02X\n", reason);
                 btstack_run_loop_remove_timer(&poll_timer);
+                btstack_run_loop_remove_timer(&notification_watchdog);
+                polling_active = false;
+                notifications_working = false;
                 gatt_client_stop_listening_for_characteristic_value_updates(&notification_listener);
                 ble_con_handle = HCI_CON_HANDLE_INVALID;
                 gatt_state = GATT_STATE_IDLE;
